@@ -22,25 +22,22 @@ jobs:
     - name: Android SDK kur
       uses: android-actions/setup-android@v4
 
-    - name: Gradle Wrapper Kontrolü ve Tamamlama
+    - name: Resmi Gradle Motorunu İndir ve Kur
       run: |
-        mkdir -p gradle/wrapper
-        if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-          curl -L https://raw.githubusercontent.com/gradle/gradle/v8.5.0/subprojects/wrapper/src/main/resources/gradle-wrapper.jar -o gradle/wrapper/gradle-wrapper.jar
-        fi
+        wget https://services.gradle.org/distributions/gradle-8.5-bin.zip
+        unzip -q gradle-8.5-bin.zip
 
-    - name: Gradle izinlerini ayarla
-      run: chmod +x gradlew
+    - name: Telefon ve TV APK Dosyalarını Derle
+      run: |
+        export PATH=$PWD/gradle-8.5/bin:$PATH
+        gradle assembleDebug
 
-    - name: Telefon ve TV APK dosyalarını derle
-      run: ./gradlew assembleDebug
-
-    - name: APK dosyalarını kontrol et
+    - name: APK Dosyalarını Kontrol Et
       run: |
         ls -la app/build/outputs/apk/debug/ || true
         ls -la tv/build/outputs/apk/debug/ || true
 
-    - name: APK dosyalarını yükle
+    - name: APK Dosyalarını Yükle
       uses: actions/upload-artifact@v4
       with:
         name: oyun-ceviri-apk-dosyalari
