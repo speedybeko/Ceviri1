@@ -22,15 +22,18 @@ jobs:
     - name: Android SDK kur
       uses: android-actions/setup-android@v4
 
-    - name: Resmi Gradle Motorunu İndir ve Kur
+    - name: Gradle Kur ve Wrapper Dosyalarını Otomatik Üret
       run: |
         wget https://services.gradle.org/distributions/gradle-8.5-bin.zip
         unzip -q gradle-8.5-bin.zip
+        export PATH=$PWD/gradle-8.5/bin:$PATH
+        gradle wrapper --gradle-version 8.5
+
+    - name: Gradle İzinlerini Ayarla
+      run: chmod +x gradlew
 
     - name: Telefon ve TV APK Dosyalarını Derle
-      run: |
-        export PATH=$PWD/gradle-8.5/bin:$PATH
-        gradle assembleDebug
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: APK Dosyalarını Kontrol Et
       run: |
