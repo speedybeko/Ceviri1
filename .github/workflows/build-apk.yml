@@ -1,8 +1,8 @@
-name: Android APK Oluştur
+name: Build APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -19,27 +19,27 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Android SDK kur
-      uses: android-actions/setup-android@v4
+    - name: Gradle kur
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: '8.5'
 
-    - name: Eksik Gradle Wrapper Dosyasını İndir
+    - name: Gradle Wrapper Jar dosyasini yeniden olustur
       run: |
-        mkdir -p gradle/wrapper
-        curl -L https://raw.githubusercontent.com/gradle/gradle/v8.5.0/subprojects/wrapper/src/main/resources/gradle-wrapper.jar -o gradle/wrapper/gradle-wrapper.jar
+        rm -f gradle/wrapper/gradle-wrapper.jar
+        gradle wrapper --gradle-version 8.5
 
     - name: Gradle izinlerini ayarla
-      run: chmod +x gradlew
+      run: chmod +x ./gradlew
 
-    - name: Telefon ve TV APK dosyalarını derle
+    - name: Telefon ve TV APK dosyalarini derle
       run: ./gradlew assembleDebug
 
-    - name: APK dosyalarını kontrol et
-      run: ls -la app/build/outputs/apk/debug/
-
-    - name: APK dosyalarını yükle
+    - name: APK dosyalarini yukle
       uses: actions/upload-artifact@v4
       with:
         name: apk-dosyalari
         path: |
           app/build/outputs/apk/debug/*.apk
-          **/build/outputs/apk/debug/*.apk
+          tv/build/outputs/apk/debug/*.apk
+        if-no-files-found: warn
