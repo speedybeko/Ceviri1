@@ -1,0 +1,39 @@
+
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+
+      - name: Java 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK kur
+        uses: android-actions/setup-android@v3
+
+      - name: APK dosyalarını oluştur
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: APK dosyalarını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: oyun-ceviri-apks
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
