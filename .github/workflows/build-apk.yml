@@ -1,51 +1,40 @@
-
-name: Build APK
+name: Android APK Oluştur
 
 on:
   push:
+    branches: [ main, master ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Android APK oluştur
     runs-on: ubuntu-latest
 
     steps:
-      - name: Depoyu indir
-        uses: actions/checkout@v4
+    - name: Depoyu indir
+      uses: actions/checkout@v4
 
-      - name: Java 17 kur
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
+    - name: Java 17 kur
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
 
-      - name: Android SDK kur
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
+    - name: Android SDK kur
+      uses: android-actions/setup-android@v4
 
-      - name: Gradle izinlerini ayarla
-        run: chmod +x gradlew
+    - name: Gradle izinlerini ayarla
+      run: chmod +x gradlew
 
-      - name: Telefon ve TV APK dosyalarını derle
-        run: ./gradlew --no-daemon assembleDebug
+    - name: Telefon ve TV APK dosyalarını derle
+      run: ./gradlew assembleDebug
 
-      - name: APK dosyalarını kontrol et
-        run: |
-          echo "Oluşturulan APK dosyaları:"
-          find . -type f -path "*/build/outputs/apk/*/*.apk"
+    - name: APK dosyalarını kontrol et
+      run: ls -la app/build/outputs/apk/debug/
 
-      - name: APK dosyalarını yükle
-        uses: actions/upload-artifact@v4
-        with:
-          name: oyun-ceviri-apks
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            tv/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 7
+    - name: APK dosyalarını yükle
+      uses: actions/upload-artifact@v4
+      with:
+        name: apk-dosyalari
+        path: |
+          app/build/outputs/apk/debug/*.apk
+          **/build/outputs/apk/debug/*.apk
