@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   build:
+    name: Android APK oluştur
     runs-on: ubuntu-latest
 
     steps:
@@ -21,22 +22,30 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-            - name: Android SDK kur
+      - name: Android SDK kur
         uses: android-actions/setup-android@v3
         with:
-          log-accepted-android-sdk-licenses: false
-        
+          accept-android-sdk-licenses: true
 
-      - name: APK dosyalarını oluştur
+      - name: Gradle izinlerini ayarla
+        run: chmod +x gradlew
+
+      - name: Telefon ve TV APK dosyalarını derle
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: APK dosyalarını kontrol et
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          echo "Oluşturulan APK dosyaları:"
+          find . -type f -path "*/build/outputs/apk/*/*.apk"
 
       - name: APK dosyalarını yükle
         uses: actions/upload-artifact@v4
         with:
           name: oyun-ceviri-apks
           path: |
-            **/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/*.apk
+            tv/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
