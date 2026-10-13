@@ -1,5 +1,4 @@
-name: Build APK
-
+name: Build APKs
 on:
   push:
     branches: [ main ]
@@ -8,43 +7,30 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Depoyu indir
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Java 17 kur
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
 
-    - name: Android SDK kur
-      uses: android-actions/setup-android@v3
+      - name: gradlew executable yap
+        run: chmod +x gradlew
 
-    - name: Gradle kur
-      uses: gradle/actions/setup-gradle@v4
-      with:
-        gradle-version: '8.5'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-    - name: Gradle Wrapper Jar dosyasini bos klasorde olustur
-      run: |
-        mkdir -p /tmp/wrapper-gen
-        cd /tmp/wrapper-gen
-        gradle wrapper --gradle-version 8.5
-        cp gradle/wrapper/gradle-wrapper.jar $GITHUB_WORKSPACE/gradle/wrapper/gradle-wrapper.jar
+      - name: Build Debug APKs
+        run: ./gradlew assembleDebug --stacktrace
 
-    - name: Gradle izinlerini ayarla
-      run: chmod +x ./gradlew
-
-    - name: Telefon ve TV APK dosyalarini derle
-      run: ./gradlew assembleDebug
-
-    - name: APK dosyalarini yukle
-      uses: actions/upload-artifact@v4
-      with:
-        name: apk-dosyalari
-        path: |
-          app/build/outputs/apk/debug/*.apk
-          tv/build/outputs/apk/debug/*.apk
-        if-no-files-found: warn
+      - name: APK'leri yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: oyun-ceviri-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            tv/build/outputs/apk/debug/*.apk
+            **/build/outputs/apk/debug/*.apk
