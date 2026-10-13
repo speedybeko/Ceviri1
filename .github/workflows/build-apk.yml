@@ -22,8 +22,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK kur
+            - name: Android SDK kur
         uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+        
 
       - name: APK dosyalarını oluştur
         run: |
