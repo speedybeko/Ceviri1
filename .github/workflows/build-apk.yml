@@ -19,15 +19,20 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
+    - name: Android SDK kur
+      uses: android-actions/setup-android@v3
+
     - name: Gradle kur
       uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: '8.5'
 
-    - name: Gradle Wrapper Jar dosyasini yeniden olustur
+    - name: Gradle Wrapper Jar dosyasini bos klasorde olustur
       run: |
-        rm -f gradle/wrapper/gradle-wrapper.jar
+        mkdir -p /tmp/wrapper-gen
+        cd /tmp/wrapper-gen
         gradle wrapper --gradle-version 8.5
+        cp gradle/wrapper/gradle-wrapper.jar $GITHUB_WORKSPACE/gradle/wrapper/gradle-wrapper.jar
 
     - name: Gradle izinlerini ayarla
       run: chmod +x ./gradlew
