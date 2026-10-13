@@ -17,8 +17,15 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: gradlew executable yap
-        run: chmod +x gradlew
+      - name: Gradle wrapper yerini düzelt
+        run: |
+          mkdir -p gradle/wrapper
+          # root'ta yanlış yerde duran dosyaları doğru yere taşı
+          if [ -f gradle-wrapper.jar ]; then mv gradle-wrapper.jar gradle/wrapper/ -f; fi
+          if [ -f gradle-wrapper.properties ]; then mv gradle-wrapper.properties gradle/wrapper/ -f; fi
+          if [ -f gradlew ]; then chmod +x gradlew; fi
+          ls -R gradle
+          ls -lh gradle/wrapper/
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -31,6 +38,4 @@ jobs:
         with:
           name: oyun-ceviri-apks
           path: |
-            app/build/outputs/apk/debug/*.apk
-            tv/build/outputs/apk/debug/*.apk
             **/build/outputs/apk/debug/*.apk
