@@ -14,6 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OyunCeviri"
-include(":app") // telefon uygulaması
-include(":tv")  // Android TV overlay uygulaması
+rootProject.name = "Oyunceviri"
+include(":app", ":tv")
