@@ -1,0 +1,876 @@
+$desktop = [Environment]::GetFolderPath("Desktop")
+$projDir = Join-Path $desktop "OyunCeviri_PC_v5.1_Ultimate"
+$zipPath = Join-Path $desktop "OyunCeviri_PC_v5.1_Ultimate.zip"
+
+if (Test-Path $projDir) { Remove-Item $projDir -Recurse -Force }
+New-Item -ItemType Directory -Path $projDir | Out-Null
+
+# 1. requirements.txt
+$reqContent = @"
+mss
+pillow
+numpy
+websocket-client
+websockets
+deep-translator
+requests
+google-genai
+rapidocr-onnxruntime
+argostranslate
+"@
+[System.IO.File]::WriteAllText((Join-Path $projDir "requirements.txt"), $reqContent, [System.Text.Encoding]::UTF8)
+
+# 2. 1_Kurulum_Yap.bat
+$setupBat = @"
+@echo off
+chcp 65001 >nul
+title OyunCeviri v5.1 Ultimate - Kurulum
+echo ===============================================================
+echo   OyunCeviri v5.1 Ultimate Gerekli Kutuphaneler Kuruluyor...
+echo ===============================================================
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+echo.
+echo ===============================================================
+echo   Kurulum Tamamlandi! 2_Baslat.bat ile acabilirsin.
+echo ===============================================================
+pause
+"@
+[System.IO.File]::WriteAllText((Join-Path $projDir "1_Kurulum_Yap.bat"), $setupBat, [System.Text.Encoding]::ASCII)
+
+# 3. 2_Baslat.bat
+$startBat = @"
+@echo off
+chcp 65001 >nul
+title OyunCeviri v5.1 Ultimate Calisiyor
+python pc_oyunceviri.py
+if %errorlevel% neq 0 (
+    echo.
+    echo [HATA] Program kapandi. Lutfen once Python ve 1_Kurulum_Yap.bat dosyasini kontrol edin.
+    pause
+)
+"@
+[System.IO.File]::WriteAllText((Join-Path $projDir "2_Baslat.bat"), $startBat, [System.Text.Encoding]::ASCII)
+
+# 4. 3_Argos_Offline_Dil_Indir.bat
+$argosBat = @"
+@echo off
+chcp 65001 >nul
+title Argos %100 Cevrimdisi Ingilizce-Turkce Model Indirici
+echo Ingilizce -> Turkce cevrimdisi sinirsiz dil paketi indiriliyor...
+python -c "import argostranslate.package; argostranslate.package.update_package_index(); pkgs = argostranslate.package.get_available_packages(); pkg = next(filter(lambda x: x.from_code == 'en' and x.to_code == 'tr', pkgs)); argostranslate.package.install_from_path(pkg.download()); print('BASARILI: %100 Cevrimdisi Dil Paketi Kuruldu!')"
+pause
+"@
+[System.IO.File]::WriteAllText((Join-Path $projDir "3_Argos_Offline_Dil_Indir.bat"), $argosBat, [System.Text.Encoding]::ASCII)
+
+# 5. pc_oyunceviri.py (v5.1 Ultimate Kusursuz Surum)
+$pyCode = @'
+import ctypes
+import sys
+
+# Windows %125 / %150 Ekran Ölçekleme (DPI) Koruması
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+import tkinter as tk
+from tkinter import ttk
+import threading
+import time
+import json
+import socket
+import os
+import re
+import sqlite3
+from collections import deque
+from difflib import SequenceMatcher
+import numpy as np
+import mss
+import requests
+from PIL import Image, ImageEnhance, ImageFilter
+
+from deep_translator import GoogleTranslator
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+try:
+    import argostranslate.translate
+    ARGOS_AVAILABLE = True
+except ImportError:
+    ARGOS_AVAILABLE = False
+
+try:
+    from google import genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+import websocket
+import asyncio
+import websockets
+
+CONFIG_FILE = "ayarlar_v5.json"
+CACHE_DB_FILE = "ceviri_hafizasi_v5.db"
+DEFAULT_GLOSSARY_HINT = "Örn: Night City=Night City, Ripperdoc=Siberdoktor"
+
+GAME_PROFILES = {
+    "Standart / Hikayeli Oyun": "Doğal, akıcı, sinematik bir Türkçe kullan. Deyimleri Türkçeye ve oyun diline uyarla.",
+    "Aksiyon / Suç / Cyberpunk": "Sokak diline, aksiyon temposuna ve argoya uygun, sert, dinamik ve doğal bir Türkçe kullan.",
+    "Korku / Gerilim (RE / Silent Hill)": "Gerilimli, ürpertici ve karanlık atmosfere uygun bir Türkçe kullan.",
+    "RPG / Fantastik / Ortaçağ": "Destansı, dönemsel ve epik bir Türkçe kullan, krallık ve büyü terimlerini koru."
+}
+
+# AŞAMA 1 (İNGİLİZCE -> AÇIK İNGİLİZCE): Çeviri motorunun dil algılamasını bozmadan argoyu anlamlandırma
+EN_IDIOM_NORMALIZER = [
+    (r"\bwatch your six\b", "watch your back"),
+    (r"\bon your six\b", "right behind you"),
+    (r"\bgot your six\b", "covering your back"),
+    (r"\bhold your fire\b", "stop shooting"),
+    (r"\bcease fire\b", "stop shooting"),
+    (r"\bhe's flatlined\b", "he died"),
+    (r"\bshe's flatlined\b", "she died"),
+    (r"\bflatlined\b", "died"),
+    (r"\bzeroed him\b", "eliminated him"),
+    (r"\bzeroed her\b", "eliminated her"),
+    (r"\bpreem\b", "excellent"),
+    (r"\bchoom\b", "my friend"),
+    (r"\bchoomba\b", "my friend"),
+    (r"\bgonk\b", "idiot"),
+    (r"\bedgerunner\b", "mercenary"),
+    (r"\bstand down\b", "step back and calm down"),
+    (r"\bfall back\b", "retreat immediately"),
+    (r"\bcopy that\b", "understood"),
+    (r"\broger that\b", "understood"),
+    (r"\bkeep your eyes peeled\b", "stay very alert"),
+    (r"\beyes peeled\b", "stay alert"),
+    (r"\bpiece of cake\b", "very easy"),
+    (r"\bbite the bullet\b", "face the grim reality"),
+    (r"\bwe got company\b", "enemies are approaching"),
+    (r"\bwe've got company\b", "enemies are approaching"),
+    (r"\bthe coast is clear\b", "there is no danger around"),
+    (r"\bsit tight\b", "wait patiently where you are"),
+    (r"\bhang in there\b", "hold on and stay strong"),
+    (r"\bcut to the chase\b", "get straight to the point"),
+    (r"\bout of the loop\b", "unaware of the situation")
+]
+
+# AŞAMA 2 (TÜRKÇE SON-İŞLEMCİ): Makine çevirisinin robotik ifadelerini doğal oyun Türkçesine çevirme
+TR_NATURAL_POLISHER = [
+    (r"\bateş etmeyi bırak(ın)?\b", "ateş kes"),
+    (r"\bateşini tut\b", "ateş kes"),
+    (r"\barkanı izle\b", "arkanı kolla"),
+    (r"\barkana bak\b", "arkanı kolla"),
+    (r"\bşirketimiz var\b", "misafirimiz var"),
+    (r"\bsahil temiz\b", "etraf güvenli"),
+    (r"\bgeri çekil ve sakinleş\b", "silahını indir ve sakin ol"),
+    (r"\bhemen geri çekilin\b", "derhal geri çekilin")
+]
+
+
+class PersistentCache:
+    def __init__(self, db_path=CACHE_DB_FILE):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS cache (src TEXT PRIMARY KEY, tr TEXT)")
+
+    def get(self, src):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cur = conn.execute("SELECT tr FROM cache WHERE src = ?", (src,))
+                row = cur.fetchone()
+                return row[0] if row else None
+        except Exception:
+            return None
+
+    def set(self, src, tr):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("INSERT OR REPLACE INTO cache (src, tr) VALUES (?, ?)", (src, tr))
+        except Exception:
+            pass
+
+
+class AreaSelector(tk.Toplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+        self.attributes("-alpha", 0.35)
+        self.attributes("-fullscreen", True)
+        self.attributes("-topmost", True)
+        self.config(cursor="cross")
+
+        self.canvas = tk.Canvas(self, cursor="cross", bg="black")
+        self.canvas.pack(fill="both", expand=True)
+
+        self.start_x = None
+        self.start_y = None
+        self.rect = None
+
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def on_press(self, event):
+        self.start_x = int(self.canvas.canvasx(event.x))
+        self.start_y = int(self.canvas.canvasy(event.y))
+        self.rect = self.canvas.create_rectangle(
+            self.start_x, self.start_y, self.start_x, self.start_y,
+            outline="#00e676", width=3
+        )
+
+    def on_drag(self, event):
+        cur_x = int(self.canvas.canvasx(event.x))
+        cur_y = int(self.canvas.canvasy(event.y))
+        self.canvas.coords(self.rect, self.start_x, self.start_y, cur_x, cur_y)
+
+    def on_release(self, event):
+        end_x = int(self.canvas.canvasx(event.x))
+        end_y = int(self.canvas.canvasy(event.y))
+        x1 = min(self.start_x, end_x)
+        y1 = min(self.start_y, end_y)
+        x2 = max(self.start_x, end_x)
+        y2 = max(self.start_y, end_y)
+
+        self.destroy()
+        if (x2 - x1) > 20 and (y2 - y1) > 10:
+            self.callback({"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1})
+
+
+class OyunCeviriUltimate:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("OyunÇeviri v5.1 ULTIMATE - Kusursuz Yerelleştirme Sürümü")
+        self.root.geometry("680x860")
+        self.root.configure(bg="#121212")
+
+        self.config = self.load_config()
+        self.roi = self.config.get("roi", {"left": 300, "top": 800, "width": 1300, "height": 200})
+
+        self.is_running = False
+        self.ws_client = None
+        self.last_reconnect_attempt = 0.0
+        self.server_loop = None
+        self.server_running = False
+        self.connected_tv_clients = set()
+
+        self.last_raw_text = ""
+        self.last_img_array = None
+        self.empty_screen_counter = 0
+        self.screen_cleared = True
+        self.gemini_cooldown_until = 0.0
+        self.dialogue_history = deque(maxlen=6)
+        self.db_cache = PersistentCache()
+        self.runtime_settings = {}
+
+        self.ocr_engine = RapidOCR() if OCR_AVAILABLE else None
+        self.google_translator = GoogleTranslator(source="auto", target="tr")
+
+        self._build_ui()
+        self._sync_runtime_settings()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def set_status(self, text, color="#9e9e9e"):
+        self.root.after(0, lambda: self.lbl_status.config(text=text, fg=color))
+
+    def set_preview(self, translated_text, original_text=""):
+        def _update():
+            self.txt_preview.delete("1.0", tk.END)
+            if translated_text:
+                display_str = f"[TR]: {translated_text}\n[EN]: {original_text}" if original_text else translated_text
+                self.txt_preview.insert(tk.END, display_str)
+        self.root.after(0, _update)
+
+    def load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _sync_runtime_settings(self):
+        glossary_val = self.entry_glossary.get().strip()
+        if glossary_val == DEFAULT_GLOSSARY_HINT:
+            glossary_val = ""
+        self.runtime_settings = {
+            "tv_ip": self.entry_ip.get().strip(),
+            "tv_port": self.entry_port.get().strip(),
+            "conn_mode": self.conn_mode.get(),
+            "data_format": self.format_var.get(),
+            "engine": self.engine_var.get(),
+            "ollama_model": self.ollama_model_var.get().strip() or "gemma2:2b",
+            "game_profile": self.profile_var.get(),
+            "api_key": self.entry_api.get().strip(),
+            "custom_glossary": glossary_val,
+            "auto_clear": bool(self.auto_clear_var.get()),
+            "preprocess": bool(self.preprocess_var.get()),
+            "idiom_boost": bool(self.idiom_var.get()),
+            "roi": dict(self.roi)
+        }
+        return self.runtime_settings
+
+    def save_config(self):
+        data = self._sync_runtime_settings()
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def on_close(self):
+        self.is_running = False
+        self.save_config()
+        if self.ws_client:
+            try:
+                self.ws_client.close()
+            except Exception:
+                pass
+        self.root.destroy()
+
+    def _get_local_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def _build_ui(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # 1. TV Bağlantı Ayarları
+        frame_conn = tk.LabelFrame(self.root, text=" 1. Toshiba TV Bağlantı Ayarları (WebSocket) ", bg="#1e1e1e", fg="#00e676", font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        frame_conn.pack(fill="x", padx=15, pady=6)
+
+        self.conn_mode = tk.StringVar(value=self.config.get("conn_mode", "client"))
+        tk.Radiobutton(frame_conn, text="TV'ye Bağlan (TV Alıcı Modda)", variable=self.conn_mode, value="client", bg="#1e1e1e", fg="white", selectcolor="#333333").grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Radiobutton(frame_conn, text=f"PC'yi Sunucu Yap (PC IP: {self._get_local_ip()})", variable=self.conn_mode, value="server", bg="#1e1e1e", fg="white", selectcolor="#333333").grid(row=0, column=2, columnspan=2, sticky="w")
+
+        tk.Label(frame_conn, text="TV IP Adresi:", bg="#1e1e1e", fg="white").grid(row=1, column=0, pady=5, sticky="e")
+        self.entry_ip = tk.Entry(frame_conn, width=16, bg="#2c2c2c", fg="white", insertbackground="white")
+        self.entry_ip.insert(0, self.config.get("tv_ip", "192.168.1.105"))
+        self.entry_ip.grid(row=1, column=1, padx=5, pady=5)
+
+        tk.Label(frame_conn, text="Port:", bg="#1e1e1e", fg="white").grid(row=1, column=2, pady=5, sticky="e")
+        self.entry_port = tk.Entry(frame_conn, width=8, bg="#2c2c2c", fg="white", insertbackground="white")
+        self.entry_port.insert(0, self.config.get("tv_port", "8080"))
+        self.entry_port.grid(row=1, column=3, padx=5, pady=5)
+
+        self.format_var = tk.StringVar(value=self.config.get("data_format", "json"))
+        tk.Label(frame_conn, text="Veri Formatı:", bg="#1e1e1e", fg="white").grid(row=2, column=0, sticky="e")
+        ttk.Combobox(frame_conn, textvariable=self.format_var, values=["json", "raw_text"], width=13, state="readonly").grid(row=2, column=1, padx=5)
+
+        self.btn_connect = tk.Button(frame_conn, text="Bağlantıyı Başlat", bg="#0288d1", fg="white", font=("Segoe UI", 9, "bold"), command=self.start_connection)
+        self.btn_connect.grid(row=2, column=2, columnspan=2, sticky="ew", padx=5)
+
+        self.btn_test = tk.Button(frame_conn, text="TV'ye Test Altyazısı Gönder", bg="#7b1fa2", fg="white", font=("Segoe UI", 9, "bold"), command=self.send_test_subtitle)
+        self.btn_test.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+
+        # 2. Gelişmiş Çeviri Motorları
+        frame_engine = tk.LabelFrame(self.root, text=" 2. Profesyonel Çeviri Motoru ve Yerelleştirme ", bg="#1e1e1e", fg="#00e676", font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        frame_engine.pack(fill="x", padx=15, pady=5)
+
+        self.engine_var = tk.StringVar(value=self.config.get("engine", "ultimate_hybrid"))
+
+        tk.Radiobutton(
+            frame_engine,
+            text="1. ULTIMATE HİBRİT AI (Önerilen): Gemini/Yerel AI + Otomatik Yedekleme (En Yüksek Kalite)",
+            variable=self.engine_var, value="ultimate_hybrid", bg="#1e1e1e", fg="#00e676", selectcolor="#333333", font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w")
+
+        tk.Radiobutton(
+            frame_engine,
+            text="2. %100 ÇEVRİMDIŞI YEREL AI (Ollama - RTX Ekran Kartı): Diyalog Hafızalı & Sınırsız",
+            variable=self.engine_var, value="local_ollama_ai", bg="#1e1e1e", fg="#29b6f6", selectcolor="#333333", font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w")
+
+        tk.Radiobutton(
+            frame_engine,
+            text="3. AKILLI LİMİTSİZ MOD: API Key Gerekmez, 2 Aşamalı Oyun Deyim Motoru + Hızlı Çeviri",
+            variable=self.engine_var, value="smart_multi_free", bg="#1e1e1e", fg="#ffca28", selectcolor="#333333", font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w")
+
+        tk.Radiobutton(
+            frame_engine,
+            text="4. %100 İNTERNETSİZ ARGOS NMT: Yerel Sinirsel Paket + Oyun Deyim Motoru (0.05 sn)",
+            variable=self.engine_var, value="offline_argos", bg="#1e1e1e", fg="#cccccc", selectcolor="#333333"
+        ).pack(anchor="w")
+
+        sub_frame = tk.Frame(frame_engine, bg="#1e1e1e")
+        sub_frame.pack(fill="x", pady=6)
+
+        tk.Label(sub_frame, text="Oyun Atmosferi:", bg="#1e1e1e", fg="white").grid(row=0, column=0, sticky="e", pady=3)
+        self.profile_var = tk.StringVar(value=self.config.get("game_profile", "Standart / Hikayeli Oyun"))
+        ttk.Combobox(sub_frame, textvariable=self.profile_var, values=list(GAME_PROFILES.keys()), width=36, state="readonly").grid(row=0, column=1, padx=5, pady=3, sticky="w")
+
+        tk.Label(sub_frame, text="Ollama Model:", bg="#1e1e1e", fg="#29b6f6").grid(row=1, column=0, sticky="e", pady=3)
+        self.ollama_model_var = tk.StringVar(value=self.config.get("ollama_model", "gemma2:2b"))
+        ttk.Combobox(sub_frame, textvariable=self.ollama_model_var, values=["gemma2:2b", "qwen2.5:3b", "llama3.2:3b"], width=36).grid(row=1, column=1, padx=5, pady=3, sticky="w")
+
+        tk.Label(sub_frame, text="Özel Sözlük:", bg="#1e1e1e", fg="#aaaaaa").grid(row=2, column=0, sticky="e", pady=3)
+        self.entry_glossary = tk.Entry(sub_frame, width=39, bg="#2c2c2c", fg="white", insertbackground="white")
+        saved_glossary = self.config.get("custom_glossary", "")
+        self.entry_glossary.insert(0, saved_glossary if saved_glossary else DEFAULT_GLOSSARY_HINT)
+        self.entry_glossary.grid(row=2, column=1, padx=5, pady=3, sticky="w")
+
+        tk.Label(sub_frame, text="Gemini API Key:", bg="#1e1e1e", fg="#888888").grid(row=3, column=0, sticky="e", pady=3)
+        self.entry_api = tk.Entry(sub_frame, width=39, bg="#2c2c2c", fg="white", show="*", insertbackground="white")
+        self.entry_api.insert(0, self.config.get("api_key", ""))
+        self.entry_api.grid(row=3, column=1, padx=5, pady=3, sticky="w")
+
+        opt_frame = tk.Frame(frame_engine, bg="#1e1e1e")
+        opt_frame.pack(fill="x", pady=2)
+        self.idiom_var = tk.BooleanVar(value=self.config.get("idiom_boost", True))
+        self.preprocess_var = tk.BooleanVar(value=self.config.get("preprocess", True))
+        self.auto_clear_var = tk.BooleanVar(value=self.config.get("auto_clear", True))
+        tk.Checkbutton(opt_frame, text="2 Aşamalı Argo & Deyim Motoru", variable=self.idiom_var, bg="#1e1e1e", fg="#00e676", selectcolor="#333333").pack(side="left", padx=4)
+        tk.Checkbutton(opt_frame, text="OCR Görüntü Keskinleştirme", variable=self.preprocess_var, bg="#1e1e1e", fg="#dddddd", selectcolor="#333333").pack(side="left", padx=4)
+        tk.Checkbutton(opt_frame, text="Otomatik Altyazı Silme", variable=self.auto_clear_var, bg="#1e1e1e", fg="#dddddd", selectcolor="#333333").pack(side="left", padx=4)
+
+        # 3. Ekran Yakalama Bölgesi (ROI)
+        frame_roi = tk.LabelFrame(self.root, text=" 3. Xbox Remote Play Altyazı Bölgesi ", bg="#1e1e1e", fg="#00e676", font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        frame_roi.pack(fill="x", padx=15, pady=5)
+
+        self.lbl_roi = tk.Label(frame_roi, text=f"Seçili Alan: X={self.roi['left']}, Y={self.roi['top']}, G={self.roi['width']}, Y={self.roi['height']}", bg="#1e1e1e", fg="#bdbdbd")
+        self.lbl_roi.pack(side="left", padx=5)
+
+        tk.Button(frame_roi, text="Ekrandan Alan Seç", bg="#f57c00", fg="white", font=("Segoe UI", 9, "bold"), command=self.select_area).pack(side="right", padx=5)
+
+        # 4. Başlat / Durdur ve Canlı Önizleme
+        self.btn_toggle = tk.Button(self.root, text="ÇEVİRİYİ BAŞLAT", bg="#00c853", fg="white", font=("Segoe UI", 12, "bold"), height=2, command=self.toggle_capture)
+        self.btn_toggle.pack(fill="x", padx=15, pady=6)
+
+        frame_preview = tk.LabelFrame(self.root, text=" Canlı Altyazı ve Veritabanı Hafızası ", bg="#1e1e1e", fg="#00e676", font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        frame_preview.pack(fill="both", expand=True, padx=15, pady=5)
+
+        self.txt_preview = tk.Text(frame_preview, height=5, bg="#121212", fg="#ffeb3b", font=("Segoe UI", 11, "bold"), wrap="word")
+        self.txt_preview.pack(fill="both", expand=True)
+
+        self.lbl_status = tk.Label(self.root, text="Durum: Hazır (v5.1 Kusursuz Sürüm)", bg="#121212", fg="#9e9e9e", anchor="w")
+        self.lbl_status.pack(fill="x", padx=15, pady=2)
+
+    def select_area(self):
+        self.root.iconify()
+        time.sleep(0.3)
+        AreaSelector(self.root, self.on_area_selected)
+
+    def on_area_selected(self, roi):
+        self.root.deiconify()
+        self.roi = roi
+        self.save_config()
+        self.lbl_roi.config(text=f"Seçili Alan: X={roi['left']}, Y={roi['top']}, G={roi['width']}, Y={roi['height']}")
+        self.set_status("Durum: Altyazı bölgesi kaydedildi.", "#00e676")
+
+    # --- WEBSOCKET BAĞLANTI YÖNETİMİ ---
+    def start_connection(self):
+        cfg = self._sync_runtime_settings()
+        self.save_config()
+        mode = cfg["conn_mode"]
+        ip = cfg["tv_ip"]
+        try:
+            port = int(cfg["tv_port"])
+        except ValueError:
+            self.set_status("Hata: Port numarası sadece rakam olmalıdır!", "#ff5252")
+            return
+
+        if mode == "client":
+            threading.Thread(target=self._connect_as_client, args=(ip, port), daemon=True).start()
+        else:
+            if self.server_running:
+                self.set_status(f"Durum: Sunucu zaten {port} portunda çalışıyor.", "#00e676")
+                return
+            threading.Thread(target=self._start_ws_server, args=(port,), daemon=True).start()
+
+    def _connect_as_client(self, ip, port):
+        url = f"ws://{ip}:{port}"
+        self.set_status(f"Durum: {url} adresine bağlanılıyor...", "#29b6f6")
+        try:
+            if self.ws_client:
+                try:
+                    self.ws_client.close()
+                except Exception:
+                    pass
+            ws = websocket.WebSocket()
+            ws.settimeout(4)
+            ws.connect(url)
+            ws.settimeout(None)
+            self.ws_client = ws
+            self.set_status(f"Durum: Toshiba TV'ye Bağlandı! ({url})", "#00e676")
+        except Exception as e:
+            self.ws_client = None
+            self.set_status(f"Bağlantı Hatası: {e}", "#ff5252")
+
+    def _start_ws_server(self, port):
+        async def handler(ws):
+            self.connected_tv_clients.add(ws)
+            self.set_status(f"Durum: TV Sunucuya Bağlandı! ({len(self.connected_tv_clients)} cihaz)", "#00e676")
+            try:
+                async for _ in ws:
+                    pass
+            finally:
+                self.connected_tv_clients.discard(ws)
+
+        async def main():
+            try:
+                async with websockets.serve(handler, "0.0.0.0", port):
+                    self.server_running = True
+                    self.set_status(f"Durum: Sunucu {self._get_local_ip()}:{port} üzerinde TV'yi bekliyor...", "#29b6f6")
+                    await asyncio.Future()
+            except Exception as e:
+                self.server_running = False
+                self.set_status(f"Sunucu Başlatma Hatası: {e}", "#ff5252")
+
+        self.server_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.server_loop)
+        self.server_loop.run_until_complete(main())
+
+    def send_to_tv(self, translated_text, original_text=""):
+        cfg = self.runtime_settings
+        if cfg.get("data_format", "json") == "json":
+            payload = json.dumps({
+                "type": "subtitle",
+                "text": translated_text,
+                "subtitle": translated_text,
+                "tr": translated_text,
+                "original": original_text,
+                "timestamp": int(time.time() * 1000)
+            }, ensure_ascii=False)
+        else:
+            payload = translated_text
+
+        if cfg.get("conn_mode", "client") == "client":
+            if self.ws_client:
+                try:
+                    self.ws_client.send(payload)
+                except Exception:
+                    self.ws_client = None
+            elif (time.time() - self.last_reconnect_attempt) > 10.0:
+                self.last_reconnect_attempt = time.time()
+                try:
+                    ip = cfg.get("tv_ip", "192.168.1.105")
+                    port = int(cfg.get("tv_port", "8080"))
+                    self._connect_as_client(ip, port)
+                    if self.ws_client:
+                        self.ws_client.send(payload)
+                except Exception:
+                    pass
+
+        if self.server_loop and self.connected_tv_clients:
+            for client in list(self.connected_tv_clients):
+                try:
+                    asyncio.run_coroutine_threadsafe(client.send(payload), self.server_loop)
+                except Exception:
+                    pass
+
+        self.set_preview(translated_text, original_text)
+
+    def send_test_subtitle(self):
+        self._sync_runtime_settings()
+        test_msg = "OyunÇeviri v5.1 ULTIMATE Bağlantısı Başarılı!"
+        self.send_to_tv(test_msg, "Ultimate Engine v5.1 Ready")
+        self.set_status("Durum: Test altyazısı TV'ye gönderildi.", "#00e676")
+
+    # --- 2 AŞAMALI OYUN DEYİMLERİ, SÖZLÜK VE DOĞALLAŞTIRMA MOTORU ---
+    def _clean_and_normalize_en(self, text, cfg):
+        processed = text
+        processed = re.sub(r'\|', 'I', processed)
+        processed = re.sub(r'[‘’`]', "'", processed)
+        processed = re.sub(r'\s+', ' ', processed).strip()
+
+        if cfg.get("idiom_boost", True):
+            for pattern, clean_en in EN_IDIOM_NORMALIZER:
+                processed = re.sub(pattern, clean_en, processed, flags=re.IGNORECASE)
+
+        return processed
+
+    def _polish_turkish_output(self, tr_text, cfg):
+        if not tr_text:
+            return ""
+        result = tr_text.strip()
+
+        if cfg.get("idiom_boost", True):
+            for pattern, natural_tr in TR_NATURAL_POLISHER:
+                result = re.sub(pattern, natural_tr, result, flags=re.IGNORECASE)
+
+        glossary = cfg.get("custom_glossary", "")
+        if glossary:
+            for pair in glossary.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    result = re.sub(rf"\b{re.escape(k.strip())}\b", v.strip(), result, flags=re.IGNORECASE)
+
+        return result
+
+    def _translate_local_ollama(self, raw_text, cfg):
+        model_name = cfg.get("ollama_model", "gemma2:2b")
+        profile_desc = GAME_PROFILES.get(cfg.get("game_profile", ""), "")
+        glossary = cfg.get("custom_glossary", "")
+        glossary_line = f"Özel Terimler Sözlüğü: {glossary}\n" if glossary else ""
+        history_str = "\n".join(self.dialogue_history) if self.dialogue_history else "Yok"
+
+        prompt = (
+            f"Görev: Aşağıdaki İngilizce oyun altyazısını profesyonel bir Türkçe oyun yama diliyle çevir.\n"
+            f"Oyun Atmosferi: {profile_desc}\n"
+            f"{glossary_line}"
+            f"Önceki Diyaloglar:\n{history_str}\n"
+            f"Kural: SADECE Türkçe çeviriyi yaz, açıklama veya ek bilgi yazma.\n"
+            f"Altyazı: {raw_text}"
+        )
+        try:
+            resp = requests.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={
+                    "model": model_name,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 90}
+                },
+                timeout=3.2
+            )
+            if resp.status_code == 200:
+                ans = resp.json().get("response", "").strip()
+                clean_ans = ans.strip('"').strip("'")
+                return self._polish_turkish_output(clean_ans, cfg)
+        except Exception:
+            pass
+        return ""
+
+    def _translate_smart_multi_free(self, text, cfg):
+        norm_en = self._clean_and_normalize_en(text, cfg)
+        try:
+            tr = self.google_translator.translate(norm_en)
+            return self._polish_turkish_output(tr, cfg)
+        except Exception:
+            return ""
+
+    def _translate_offline_argos(self, text, cfg):
+        if not ARGOS_AVAILABLE:
+            return ""
+        try:
+            norm_en = self._clean_and_normalize_en(text, cfg)
+            tr = argostranslate.translate.translate(norm_en, "en", "tr")
+            return self._polish_turkish_output(tr, cfg)
+        except Exception:
+            return ""
+
+    def _translate_gemini(self, raw_text, client, cfg):
+        profile_desc = GAME_PROFILES.get(cfg.get("game_profile", ""), "")
+        glossary = cfg.get("custom_glossary", "")
+        glossary_line = f"Özel Terimler Sözlüğü: {glossary}\n" if glossary else ""
+        history_str = "\n".join(self.dialogue_history) if self.dialogue_history else "Yok"
+
+        prompt = (
+            f"Sen profesyonel bir video oyunu yerelleştirme uzmanısın. Atmosfer: {profile_desc}\n"
+            f"{glossary_line}"
+            f"Önceki Diyalog Geçmişi:\n{history_str}\n"
+            f"Aşağıdaki oyun altyazısını en doğal Türkçeye çevir. SADECE çeviriyi ver:\n{raw_text}"
+        )
+        try:
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            return self._polish_turkish_output(response.text.strip(), cfg)
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                self.gemini_cooldown_until = time.time() + 20.0
+            return ""
+
+    # --- GÖRÜNTÜ VE OCR DÖNGÜSÜ ---
+    def _preprocess_for_ocr(self, img_pil, cfg):
+        if not cfg.get("preprocess", True):
+            return img_pil
+        w, h = img_pil.size
+        if h < 90:
+            img_pil = img_pil.resize((int(w * 1.5), int(h * 1.5)), Image.Resampling.BICUBIC)
+        contrast = ImageEnhance.Contrast(img_pil).enhance(1.4)
+        return contrast.filter(ImageFilter.SHARPEN)
+
+    def _is_similar_text(self, text1, text2, threshold=0.86):
+        if not text1 or not text2:
+            return False
+        clean1 = re.sub(r'[^a-zA-Z0-9]', '', text1.lower())
+        clean2 = re.sub(r'[^a-zA-Z0-9]', '', text2.lower())
+        if clean1 == clean2:
+            return True
+        return SequenceMatcher(None, clean1, clean2).ratio() >= threshold
+
+    def _frame_diff(self, img_pil):
+        small = img_pil.resize((64, 16)).convert("L")
+        arr = np.array(small, dtype=np.int16)
+        if self.last_img_array is None:
+            self.last_img_array = arr
+            return 99.0
+        diff = float(np.mean(np.abs(arr - self.last_img_array)))
+        self.last_img_array = arr
+        return diff
+
+    def toggle_capture(self):
+        self.save_config()
+        if not self.is_running:
+            self.is_running = True
+            self.btn_toggle.config(text="ÇEVİRİYİ DURDUR", bg="#d50000")
+            threading.Thread(target=self.capture_loop, daemon=True).start()
+        else:
+            self.is_running = False
+            self.btn_toggle.config(text="ÇEVİRİYİ BAŞLAT", bg="#00c853")
+            self.set_status("Durum: Çeviri durduruldu.", "#9e9e9e")
+
+    def capture_loop(self):
+        cfg = self.runtime_settings
+        gemini_client = None
+        api_key = cfg.get("api_key", "")
+        if GEMINI_AVAILABLE and api_key:
+            try:
+                gemini_client = genai.Client(api_key=api_key)
+            except Exception:
+                pass
+
+        with mss.mss() as sct:
+            while self.is_running:
+                start_t = time.time()
+                try:
+                    roi = cfg.get("roi", self.roi)
+                    sct_img = sct.grab(roi)
+                    img_pil = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+
+                    if self._frame_diff(img_pil) > 3.8:
+                        time.sleep(0.14)
+                        sct_img = sct.grab(roi)
+                        img_pil = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                        self._frame_diff(img_pil)
+                        self._process_ocr_pipeline(img_pil, gemini_client, cfg)
+
+                except Exception as e:
+                    self.set_status(f"Yakalama Hatası: {e}", "#ff5252")
+
+                elapsed = time.time() - start_t
+                time.sleep(max(0.26 - elapsed, 0.05))
+
+    def _process_ocr_pipeline(self, img_pil, gemini_client, cfg):
+        if not self.ocr_engine:
+            self.set_status("Hata: rapidocr-onnxruntime kurulu değil!", "#ff5252")
+            return
+
+        proc_img = self._preprocess_for_ocr(img_pil, cfg)
+        result, _ = self.ocr_engine(np.array(proc_img))
+
+        if not result:
+            self._handle_empty_subtitle(cfg)
+            return
+
+        detected_lines = [line[1] for line in result if float(line[2]) > 0.58]
+        raw_text = " ".join(detected_lines).strip()
+
+        if len(raw_text) < 2:
+            self._handle_empty_subtitle(cfg)
+            return
+
+        self.empty_screen_counter = 0
+        self.screen_cleared = False
+
+        if self._is_similar_text(raw_text, self.last_raw_text):
+            return
+
+        self.last_raw_text = raw_text
+
+        cached_tr = self.db_cache.get(raw_text)
+        if cached_tr:
+            self.send_to_tv(cached_tr, raw_text)
+            self.set_status("Hafızadan Anında Getirildi (0 ms)", "#00e676")
+            return
+
+        t0 = time.time()
+        mode = cfg.get("engine", "ultimate_hybrid")
+        translated = ""
+        engine_label = ""
+
+        if mode == "ultimate_hybrid":
+            if gemini_client and time.time() >= self.gemini_cooldown_until:
+                translated = self._translate_gemini(raw_text, gemini_client, cfg)
+                if translated:
+                    engine_label = "Gemini 2.5 AI"
+            if not translated:
+                translated = self._translate_local_ollama(raw_text, cfg)
+                if translated:
+                    engine_label = "Yerel AI (Ollama)"
+            if not translated:
+                translated = self._translate_smart_multi_free(raw_text, cfg)
+                if translated:
+                    engine_label = "Akıllı Deyim Motoru"
+            if not translated:
+                translated = self._translate_offline_argos(raw_text, cfg)
+                if translated:
+                    engine_label = "%100 Offline Argos"
+
+        elif mode == "local_ollama_ai":
+            translated = self._translate_local_ollama(raw_text, cfg)
+            if translated:
+                engine_label = "Yerel AI (Ollama)"
+            else:
+                translated = self._translate_smart_multi_free(raw_text, cfg) or self._translate_offline_argos(raw_text, cfg)
+                engine_label = "Yedek Deyim Motoru (Ollama Kapalı)"
+
+        elif mode == "offline_argos":
+            translated = self._translate_offline_argos(raw_text, cfg)
+            if translated:
+                engine_label = "%100 Offline Argos"
+            else:
+                translated = self._translate_smart_multi_free(raw_text, cfg)
+                engine_label = "Akıllı Deyim Motoru (Argos Paketi Yok)"
+
+        else:
+            translated = self._translate_smart_multi_free(raw_text, cfg)
+            if translated:
+                engine_label = "Akıllı Deyim Motoru"
+            else:
+                translated = self._translate_offline_argos(raw_text, cfg)
+                engine_label = "%100 Offline Argos (İnternet Yedeği)"
+
+        if translated:
+            ms = int((time.time() - t0) * 1000)
+            self.db_cache.set(raw_text, translated)
+            self.dialogue_history.append(f"EN: {raw_text} -> TR: {translated}")
+            self.send_to_tv(translated, raw_text)
+            self.set_status(f"[{engine_label}] Çevrildi ({ms} ms)", "#00e676")
+
+    def _handle_empty_subtitle(self, cfg):
+        if not cfg.get("auto_clear", True) or self.screen_cleared:
+            return
+        self.empty_screen_counter += 1
+        if self.empty_screen_counter >= 3:
+            self.send_to_tv("", "")
+            self.last_raw_text = ""
+            self.screen_cleared = True
+            self.set_status("Durum: Konuşma bitti, TV ekranı temizlendi.", "#9e9e9e")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = OyunCeviriUltimate(root)
+    root.mainloop()
+'@
+[System.IO.File]::WriteAllText((Join-Path $projDir "pc_oyunceviri.py"), $pyCode, [System.Text.Encoding]::UTF8)
+
+# 6. ZIP Dosyasını Oluştur
+if (Test-Path $zipPath) { Remove-Item$zipPath -Force }
+Compress-Archive -Path "$projDir\*" -DestinationPath $zipPath
+
+Write-Host "`n=======================================================" -ForegroundColor Green
+Write-Host " v5.1 ULTIMATE HAZIR! Masaustunde olusturuldu:" -ForegroundColor Green
+Write-Host " 1. Klasor : $projDir" -ForegroundColor Yellow
+Write-Host " 2. ZIP    : $zipPath" -ForegroundColor Yellow
+Write-Host "=======================================================`n" -ForegroundColor Green
